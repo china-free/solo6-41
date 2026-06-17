@@ -1,7 +1,7 @@
 import os
-from typing import Dict
+from typing import Dict, List, Tuple
 
-from models import FileInfo, DiffResult
+from models import FileInfo, DiffResult, ConflictType
 from file_filter import FileFilter
 from file_hasher import FileHasher
 
@@ -33,6 +33,21 @@ class DirectoryScanner:
                 except OSError:
                     continue
         return files
+
+    def get_matched_extensions(self, directory: str) -> List[str]:
+        directory = os.path.abspath(directory)
+        exts = set()
+        if not os.path.isdir(directory):
+            return sorted(exts)
+
+        for root, _, filenames in os.walk(directory):
+            for filename in filenames:
+                if not self.file_filter.accept(filename):
+                    continue
+                _, ext = os.path.splitext(filename)
+                if ext:
+                    exts.add(ext.lower())
+        return sorted(exts)
 
 
 class DirectoryComparator:
@@ -67,6 +82,54 @@ class DirectoryComparator:
         result.added.sort()
         result.deleted.sort()
         result.modified.sort()
+
+        return result
+
+    def compare_bidirectional(self, dir_a: str, dir_b: str) -> DiffResult:
+        dir_a = os.path.abspath(dir_a)
+        dir_b = os.path.abspath(dir_b)
+        self._source_root = dir_a
+        self._target_root = dir_b
+
+        files_a = self.scanner.scan(dir_a)
+        files_b = self.scanner.scan(dir_b)
+
+        result = DiffResult()
+
+        all_paths = set(files_a.keys()) | set(files_b.keys())
+
+        for path in all_paths:
+            in_a = path in files_a
+            in_b = path in files_b
+
+            if in_a and not in_b:
+                result.added.append(path)
+            elif not in_a and in_b:
+                result.deleted.append(path)
+            else:
+                info_a = files_a[path]
+                info_b = files_b[path]
+                if self._is_modified(info_a, info_b):
+                    if self.hasher is not None:
+                        full_a = os.path.join(dir_a, path.replace('/', os.sep))
+                        full_b = os.path.join(dir_b, path.replace('/', os.sep))
+                        if not self.hasher.files_equal(full_a, full_b):
+                            if info_a.mtime > info_b.mtime:
+                                result.conflicts.append((path, ConflictType.NEWER_A))
+                            else:
+                                result.conflicts.append((path, ConflictType.NEWER_B))
+                        else:
+                            result.modified.append(path)
+                    else:
+                        if info_a.mtime > info_b.mtime:
+                            result.conflicts.append((path, ConflictType.NEWER_A))
+                        else:
+                            result.conflicts.append((path, ConflictType.NEWER_B))
+
+        result.added.sort()
+        result.deleted.sort()
+        result.modified.sort()
+        result.conflicts.sort(key=lambda x: x[0])
 
         return result
 

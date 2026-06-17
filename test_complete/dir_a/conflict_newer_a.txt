@@ -1,0 +1,1 @@
+Content from B, which is different.
