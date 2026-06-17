@@ -3,6 +3,7 @@ from typing import Dict
 
 from models import FileInfo, DiffResult
 from file_filter import FileFilter
+from file_hasher import FileHasher
 
 
 class DirectoryScanner:
@@ -35,10 +36,15 @@ class DirectoryScanner:
 
 
 class DirectoryComparator:
-    def __init__(self, file_filter: FileFilter = None):
+    def __init__(self, file_filter: FileFilter = None, use_hash: bool = True):
         self.scanner = DirectoryScanner(file_filter)
+        self.hasher = FileHasher() if use_hash else None
+        self._source_root = ""
+        self._target_root = ""
 
     def compare(self, source_dir: str, target_dir: str) -> DiffResult:
+        self._source_root = os.path.abspath(source_dir)
+        self._target_root = os.path.abspath(target_dir)
         source_files = self.scanner.scan(source_dir)
         target_files = self.scanner.scan(target_dir)
 
@@ -55,9 +61,7 @@ class DirectoryComparator:
             elif not in_source and in_target:
                 result.deleted.append(path)
             else:
-                src_info = source_files[path]
-                tgt_info = target_files[path]
-                if src_info.size != tgt_info.size or abs(src_info.mtime - tgt_info.mtime) > 0.001:
+                if self._is_modified(source_files[path], target_files[path]):
                     result.modified.append(path)
 
         result.added.sort()
@@ -65,3 +69,14 @@ class DirectoryComparator:
         result.modified.sort()
 
         return result
+
+    def _is_modified(self, src_info: FileInfo, tgt_info: FileInfo) -> bool:
+        if src_info.size != tgt_info.size:
+            return True
+        if abs(src_info.mtime - tgt_info.mtime) <= 0.001:
+            return False
+        if self.hasher is None:
+            return True
+        src_full = os.path.join(self._source_root, src_info.relative_path.replace('/', os.sep))
+        tgt_full = os.path.join(self._target_root, tgt_info.relative_path.replace('/', os.sep))
+        return not self.hasher.files_equal(src_full, tgt_full)

@@ -5,13 +5,15 @@ from typing import List, Callable, Optional
 from models import SyncTask, SyncAction, SyncDirection, DiffResult, FileInfo
 from dir_comparator import DirectoryScanner
 from file_filter import FileFilter
+from file_hasher import FileHasher
 from progress_bar import ProgressBar
 
 
 class SyncPlanner:
-    def __init__(self, file_filter: FileFilter = None):
+    def __init__(self, file_filter: FileFilter = None, use_hash: bool = True):
         self.scanner = DirectoryScanner(file_filter)
         self.file_filter = file_filter or FileFilter()
+        self.hasher = FileHasher() if use_hash else None
 
     def plan_unidirectional(self, source_dir: str, target_dir: str,
                             diff: DiffResult) -> List[SyncTask]:
@@ -94,28 +96,41 @@ class SyncPlanner:
             else:
                 info_a = files_a[path]
                 info_b = files_b[path]
-                if info_a.mtime > info_b.mtime + 0.001:
-                    src = os.path.join(dir_a, path.replace('/', os.sep))
-                    dst = os.path.join(dir_b, path.replace('/', os.sep))
-                    tasks.append(SyncTask(
-                        action=SyncAction.COPY,
-                        source_path=src,
-                        dest_path=dst,
-                        relative_path=path,
-                        size=info_a.size
-                    ))
-                elif info_b.mtime > info_a.mtime + 0.001:
-                    src = os.path.join(dir_b, path.replace('/', os.sep))
-                    dst = os.path.join(dir_a, path.replace('/', os.sep))
-                    tasks.append(SyncTask(
-                        action=SyncAction.COPY,
-                        source_path=src,
-                        dest_path=dst,
-                        relative_path=path,
-                        size=info_b.size
-                    ))
+                if self._needs_bidir_copy(info_a, info_b, path, dir_a, dir_b):
+                    if info_a.mtime > info_b.mtime + 0.001:
+                        src = os.path.join(dir_a, path.replace('/', os.sep))
+                        dst = os.path.join(dir_b, path.replace('/', os.sep))
+                        tasks.append(SyncTask(
+                            action=SyncAction.COPY,
+                            source_path=src,
+                            dest_path=dst,
+                            relative_path=path,
+                            size=info_a.size
+                        ))
+                    elif info_b.mtime > info_a.mtime + 0.001:
+                        src = os.path.join(dir_b, path.replace('/', os.sep))
+                        dst = os.path.join(dir_a, path.replace('/', os.sep))
+                        tasks.append(SyncTask(
+                            action=SyncAction.COPY,
+                            source_path=src,
+                            dest_path=dst,
+                            relative_path=path,
+                            size=info_b.size
+                        ))
 
         return tasks
+
+    def _needs_bidir_copy(self, info_a: FileInfo, info_b: FileInfo,
+                          relative_path: str, dir_a: str, dir_b: str) -> bool:
+        if info_a.size != info_b.size:
+            return True
+        if abs(info_a.mtime - info_b.mtime) <= 0.001:
+            return False
+        if self.hasher is None:
+            return True
+        full_a = os.path.join(dir_a, relative_path.replace('/', os.sep))
+        full_b = os.path.join(dir_b, relative_path.replace('/', os.sep))
+        return not self.hasher.files_equal(full_a, full_b)
 
 
 class SyncExecutor:
@@ -146,8 +161,8 @@ class SyncExecutor:
 
 
 class Syncer:
-    def __init__(self, file_filter: FileFilter = None, show_progress: bool = True):
-        self.planner = SyncPlanner(file_filter)
+    def __init__(self, file_filter: FileFilter = None, show_progress: bool = True, use_hash: bool = True):
+        self.planner = SyncPlanner(file_filter, use_hash=use_hash)
         self.executor = SyncExecutor()
         self.show_progress = show_progress
 
